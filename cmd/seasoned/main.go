@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,6 +26,9 @@ import (
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+//go:embed banner.txt
+var banner string
 
 // Exit codes (SPEC.md + SPEC.v2.md).
 const (
@@ -87,7 +91,8 @@ func run(argv []string) int {
 	case "kick":
 		return cmdKick(g, args[1:])
 	case "version":
-		fmt.Println(version)
+		fmt.Printf("  %s\n", version)
+		fmt.Println(banner)
 		return exitOK
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
