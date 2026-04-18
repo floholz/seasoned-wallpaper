@@ -1,5 +1,17 @@
 <img width="906" height="328" alt="seasoned_wallpaper-banner" src="https://github.com/user-attachments/assets/4e69893e-ffda-43ca-b6cd-79f9d34abfd8" />
 
+![GitHub Tag](https://img.shields.io/github/v/tag/floholz/seasoned-wallpaper?label=Version&color=green)
+&nbsp;&nbsp;&nbsp;
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/floholz/seasoned-wallpaper)
+&nbsp;&nbsp;&nbsp;
+![Static Badge](https://img.shields.io/badge/Linux-stable-green)
+![Static Badge](https://img.shields.io/badge/Windows-untested-yellow)
+![Static Badge](https://img.shields.io/badge/MacOS-untested-yellow)
+
+
+
+
+
 # seasoned-wallpaper
 
 A cross-platform wallpaper rotator with date-based overrides. Picks a random
