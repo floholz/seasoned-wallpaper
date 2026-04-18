@@ -1,3 +1,5 @@
+<img width="906" height="328" alt="seasoned_wallpaper-banner" src="https://github.com/user-attachments/assets/4e69893e-ffda-43ca-b6cd-79f9d34abfd8" />
+
 # seasoned-wallpaper
 
 A cross-platform wallpaper rotator with date-based overrides. Picks a random
