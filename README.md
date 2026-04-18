@@ -35,6 +35,10 @@ seasoned next                 # force a re-roll (ignore already-set-today)
 seasoned preview YYYY-MM-DD   # print what would be picked on that date, no-op
 seasoned detect               # print detected platform backend and exit
 seasoned seasons              # list configured seasons and their next match
+seasoned daemon               # run as a long-lived background process
+seasoned daemon --status      # report whether a daemon is running
+seasoned reload               # tell a running daemon to reload its config
+seasoned kick                 # tell a running daemon to force a re-roll
 seasoned version              # print version and exit
 ```
 
@@ -44,7 +48,8 @@ Global flags:
 - `--dry-run` — resolve and print, do not apply
 - `--verbose` — log decisions to stderr
 
-Exit codes: `0` ok, `1` generic, `2` config, `3` no wallpapers, `4` backend.
+Exit codes: `0` ok, `1` generic, `2` config, `3` no wallpapers, `4` backend,
+`5` daemon already running, `6` no daemon running.
 
 ## How selection works
 
@@ -106,9 +111,56 @@ osascript -e 'tell application "System Events" to set picture of every desktop t
 First-run-after-login may silently no-op until the desktop receives focus —
 documented quirk, accepted for v1.
 
-## Scheduling
+## Daemon mode (v2)
 
-`seasoned` is a one-shot command. Wire it to the OS's native scheduler:
+Instead of wiring a timer, you can run `seasoned` as a long-lived
+per-user process. The daemon re-evaluates at each local midnight, at a
+configurable safety-net interval (default 6h), and on wake-from-suspend.
+It calls the same `ResolveForDate` as the one-shot CLI, so there is no
+behavioral divergence.
+
+Control surface:
+
+- **POSIX**: `SIGHUP` → reload config, `SIGUSR1` → force re-roll,
+  `SIGUSR2` → treat as wake, `SIGTERM`/`SIGINT` → graceful shutdown.
+- **Windows**: a sentinel directory at
+  `%LOCALAPPDATA%\seasoned\control\`. Drop a file named `reload` or
+  `kick` and the daemon picks it up. The `seasoned reload` and
+  `seasoned kick` subcommands do this for you on any platform.
+- **Config hot-reload**: the daemon watches its config file; a valid
+  write triggers a reload and immediate re-evaluation. Invalid configs
+  are logged and the previous config is kept.
+
+A `daemon:` block in the config tunes these behaviors — see
+`config.example.yaml`.
+
+### Install
+
+Shipped unit files live under `dist/`:
+
+- **Linux (systemd user)**: `dist/systemd/seasoned.service`. Install with
+  ```sh
+  install -Dm0644 dist/systemd/seasoned.service \
+    ~/.config/systemd/user/seasoned.service
+  systemctl --user daemon-reload
+  systemctl --user enable --now seasoned.service
+  ```
+- **macOS (launchd agent)**: `dist/launchd/dev.floholz.seasoned.plist`.
+  Copy to `~/Library/LaunchAgents/` and `launchctl bootstrap gui/$UID`
+  it.
+- **Windows**: `dist/windows/install-startup.ps1`. Run from a shell with
+  `seasoned.exe` in the current directory (or pass `-SourcePath`). Use
+  `-Mode Task` for a scheduled task instead of a Startup-folder
+  shortcut.
+
+Running the daemon and a v1 timer at the same time is harmless — the
+idempotency check in `ResolveForDate` makes the timer a no-op on days
+the daemon already applied something.
+
+## Scheduling (v1 one-shot)
+
+If you prefer not to run the daemon, `seasoned` remains a one-shot
+command you can wire into the OS's native scheduler:
 
 ### systemd user timer (Linux)
 
@@ -207,9 +259,11 @@ Written atomically as JSON:
 
 Corruption is non-fatal — the file is reset and a warning is logged.
 
-## Non-goals (for v1)
+## Non-goals
 
 - No bundled holiday calendar — all dates are user-defined.
-- No long-running daemon; scheduling is the OS's job.
+- No IPC server, socket, or HTTP endpoint on the daemon. Control is via
+  signals (POSIX) or the sentinel directory (Windows).
+- No process supervision. systemd / launchd / Task Scheduler own restarts.
 - No GUI, no tray icon, no online sources.
 - Same wallpaper on all monitors.

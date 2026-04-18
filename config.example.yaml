@@ -49,3 +49,22 @@ seasons:
   - name: year-turn
     date_range: "12-30..01-02"
     path: ~/Pictures/wallpapers/seasons/new-year
+
+# Optional daemon block. Only read by `seasoned daemon`. All fields have
+# defaults — an existing v1 config stays valid without this block.
+# daemon:
+#   # Safety-net forced re-evaluation interval. Go duration syntax. Default: 6h.
+#   refresh_interval: 6h
+#
+#   # Watch the config file for changes and hot-reload on write. Default: true.
+#   watch_config: true
+#
+#   # Listen for org.freedesktop.login1 PrepareForSleep on Linux to re-apply
+#   # on resume. Default: true on Linux, ignored elsewhere. Set false to rely
+#   # on the drift-detection fallback only.
+#   dbus_sleep_wake: true
+#
+#   # On POSIX, also accept control via sentinel files under
+#   # $XDG_RUNTIME_DIR/seasoned/control/ (reload, kick) in addition to signals.
+#   # Always enabled on Windows, regardless of this flag. Default: false.
+#   sentinel_fallback: false

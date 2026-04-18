@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/floholz/seasoned-wallpaper/internal/config"
-	"github.com/floholz/seasoned-wallpaper/internal/resolver"
+	"github.com/floholz/seasoned-wallpaper/internal/core"
 	"github.com/floholz/seasoned-wallpaper/internal/season"
 	"github.com/floholz/seasoned-wallpaper/internal/setter"
 	"github.com/floholz/seasoned-wallpaper/internal/state"
@@ -26,13 +26,15 @@ import (
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-// Exit codes (SPEC.md).
+// Exit codes (SPEC.md + SPEC.v2.md).
 const (
-	exitOK           = 0
-	exitGeneric      = 1
-	exitConfigError  = 2
-	exitNoWallpapers = 3
-	exitBackendError = 4
+	exitOK             = 0
+	exitGeneric        = 1
+	exitConfigError    = 2
+	exitNoWallpapers   = 3
+	exitBackendError   = 4
+	exitAlreadyRunning = 5
+	exitNoDaemon       = 6
 )
 
 const dateFmt = "2006-01-02"
@@ -78,6 +80,12 @@ func run(argv []string) int {
 		return cmdDetect(g)
 	case "seasons":
 		return cmdSeasons(g)
+	case "daemon":
+		return cmdDaemon(g, args[1:])
+	case "reload":
+		return cmdReload(g, args[1:])
+	case "kick":
+		return cmdKick(g, args[1:])
 	case "version":
 		fmt.Println(version)
 		return exitOK
@@ -89,6 +97,13 @@ func run(argv []string) int {
 		printUsage(os.Stderr)
 		return exitGeneric
 	}
+}
+
+// flagSet returns a subcommand-scoped flag set that writes errors to stderr.
+func flagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	return fs
 }
 
 func setupLogger(verbose bool) {
@@ -109,6 +124,10 @@ Commands:
   preview YYYY-MM-DD    print what would be picked on that date (no-op)
   detect                print detected platform backend and exit
   seasons               list configured seasons and their next match
+  daemon                run as a long-lived background process
+  daemon --status       print status of a running daemon and exit
+  reload                signal a running daemon to reload its config
+  kick                  signal a running daemon to force a re-roll
   version               print version and exit
 
 Global flags:
@@ -116,7 +135,8 @@ Global flags:
   --dry-run             resolve and print the chosen wallpaper, don't apply
   --verbose             log decision process to stderr
 
-Exit codes: 0 ok, 1 generic, 2 config, 3 no wallpapers, 4 backend.
+Exit codes: 0 ok, 1 generic, 2 config, 3 no wallpapers, 4 backend,
+            5 daemon already running, 6 no daemon running.
 `)
 }
 
@@ -138,8 +158,8 @@ func newRNG() *rand.Rand {
 	return rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(os.Getpid())))
 }
 
-// cmdRun implements `run` and `next`. If force is false, an already-applied
-// state for today is a no-op.
+// cmdRun implements `run` and `next`. If force is false, core's
+// ReusedToday short-circuit takes effect — the wallpaper is not re-applied.
 func cmdRun(g *globalFlags, args []string, force bool) int {
 	if len(args) > 0 {
 		fmt.Fprintln(os.Stderr, "seasoned: unexpected arguments")
@@ -162,14 +182,7 @@ func cmdRun(g *globalFlags, args []string, force bool) int {
 	}
 
 	now := time.Now()
-	today := now.Format(dateFmt)
-
-	if !force && st.LastAppliedDate == today && st.LastAppliedPath != "" {
-		slog.Debug("already applied today, skipping", "date", today, "path", st.LastAppliedPath)
-		return exitOK
-	}
-
-	res, err := resolver.Resolve(now, cfg, st, newRNG())
+	d, err := core.ResolveForDate(cfg, st, now, core.Options{Force: force, Rand: newRNG()})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if strings.Contains(err.Error(), "no matching files") || strings.Contains(err.Error(), "no source") {
@@ -178,8 +191,14 @@ func cmdRun(g *globalFlags, args []string, force bool) int {
 		return exitGeneric
 	}
 
-	slog.Debug("resolved", "path", res.Path, "season", res.SeasonName, "from_pool", res.FromPool, "pool_size", res.PoolSize)
-	fmt.Println(res.Path)
+	slog.Debug("resolved", "path", d.Path, "season", d.SeasonName, "from_pool", d.FromPool, "pool_size", d.PoolSize, "reused_today", d.ReusedToday)
+
+	if d.ReusedToday {
+		slog.Debug("already applied today, skipping", "path", d.Path)
+		return exitOK
+	}
+
+	fmt.Println(d.Path)
 
 	if g.dryRun {
 		return exitOK
@@ -192,12 +211,12 @@ func cmdRun(g *globalFlags, args []string, force bool) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := set.Apply(ctx, res.Path); err != nil {
+	if err := set.Apply(ctx, d.Path); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitBackendError
 	}
 
-	next := resolver.RecordResolution(st, now, res)
+	next := core.Record(st, now, d)
 	if err := state.Save(statePath, next); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return exitGeneric
@@ -231,7 +250,10 @@ func cmdPreview(g *globalFlags, args []string) int {
 		st = &state.State{}
 	}
 
-	res, err := resolver.Resolve(when, cfg, st, newRNG())
+	// Preview is side-effect free and should not be influenced by the
+	// ReusedToday idempotence path — it shows what seasoned *would* pick
+	// from scratch on the given date.
+	d, err := core.ResolveForDate(cfg, st, when, core.Options{Force: true, Rand: newRNG()})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		if strings.Contains(err.Error(), "no matching files") {
@@ -241,10 +263,10 @@ func cmdPreview(g *globalFlags, args []string) int {
 	}
 
 	origin := "pool"
-	if !res.FromPool {
-		origin = "season=" + displaySeasonName(res.SeasonName)
+	if !d.FromPool {
+		origin = "season=" + displaySeasonName(d.SeasonName)
 	}
-	fmt.Printf("%s  %s  (%s, pool=%d)\n", when.Format(dateFmt), res.Path, origin, res.PoolSize)
+	fmt.Printf("%s  %s  (%s, pool=%d)\n", when.Format(dateFmt), d.Path, origin, d.PoolSize)
 	return exitOK
 }
 

@@ -134,6 +134,58 @@ seasons:
 	}
 }
 
+func TestLoad_DaemonDefaults(t *testing.T) {
+	p := writeConfig(t, `wallpaper_dir: /tmp/w`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Daemon.RefreshInterval != DefaultRefreshInterval {
+		t.Errorf("refresh_interval = %v, want %v", cfg.Daemon.RefreshInterval, DefaultRefreshInterval)
+	}
+	if !cfg.Daemon.WatchConfig {
+		t.Error("watch_config default should be true")
+	}
+}
+
+func TestLoad_DaemonOverrides(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  refresh_interval: 30m
+  watch_config: false
+  dbus_sleep_wake: false
+  sentinel_fallback: true
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Daemon.RefreshInterval != 30*60*1e9 { // 30m
+		t.Errorf("refresh_interval = %v", cfg.Daemon.RefreshInterval)
+	}
+	if cfg.Daemon.WatchConfig {
+		t.Error("watch_config should be false")
+	}
+	if cfg.Daemon.DBusSleepWake {
+		t.Error("dbus_sleep_wake should be false")
+	}
+	if !cfg.Daemon.SentinelFallback {
+		t.Error("sentinel_fallback should be true")
+	}
+}
+
+func TestLoad_DaemonRefreshTooShort(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  refresh_interval: 10s
+`)
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "at least 1m") {
+		t.Fatalf("expected min-duration error, got %v", err)
+	}
+}
+
 func TestExpandPath_Tilde(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	got := ExpandPath("~/foo/bar")

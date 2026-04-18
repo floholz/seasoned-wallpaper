@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,6 +17,10 @@ import (
 
 // DefaultExtensions is the fallback extension set when the user omits it.
 var DefaultExtensions = []string{"jpg", "jpeg", "png", "webp"}
+
+// DefaultRefreshInterval is the daemon's safety-net forced re-evaluation
+// cadence when the user doesn't override it.
+const DefaultRefreshInterval = 6 * time.Hour
 
 // Config is the parsed, validated, path-expanded configuration.
 type Config struct {
@@ -28,6 +33,17 @@ type Config struct {
 	LinuxCommand string // optional; {{.Path}} is substituted at apply time
 
 	Seasons []season.Spec
+
+	Daemon DaemonConfig
+}
+
+// DaemonConfig holds the v2 daemon block. Zero value is safe: defaults are
+// applied during Load.
+type DaemonConfig struct {
+	RefreshInterval  time.Duration
+	WatchConfig      bool
+	DBusSleepWake    bool
+	SentinelFallback bool
 }
 
 // rawConfig mirrors the YAML schema; kept internal so the public Config stays
@@ -42,6 +58,15 @@ type rawConfig struct {
 	} `yaml:"linux"`
 
 	Seasons []rawSeason `yaml:"seasons"`
+
+	Daemon *rawDaemon `yaml:"daemon"`
+}
+
+type rawDaemon struct {
+	RefreshInterval  string `yaml:"refresh_interval"`
+	WatchConfig      *bool  `yaml:"watch_config"`
+	DBusSleepWake    *bool  `yaml:"dbus_sleep_wake"`
+	SentinelFallback *bool  `yaml:"sentinel_fallback"`
 }
 
 type rawSeason struct {
@@ -117,7 +142,39 @@ func (c *Config) populate(raw *rawConfig) error {
 		return err
 	}
 	c.Seasons = specs
+
+	c.Daemon = defaultDaemon()
+	if raw.Daemon != nil {
+		if s := strings.TrimSpace(raw.Daemon.RefreshInterval); s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("config: daemon.refresh_interval %q: %w", s, err)
+			}
+			if d < time.Minute {
+				return fmt.Errorf("config: daemon.refresh_interval must be at least 1m, got %s", d)
+			}
+			c.Daemon.RefreshInterval = d
+		}
+		if raw.Daemon.WatchConfig != nil {
+			c.Daemon.WatchConfig = *raw.Daemon.WatchConfig
+		}
+		if raw.Daemon.DBusSleepWake != nil {
+			c.Daemon.DBusSleepWake = *raw.Daemon.DBusSleepWake
+		}
+		if raw.Daemon.SentinelFallback != nil {
+			c.Daemon.SentinelFallback = *raw.Daemon.SentinelFallback
+		}
+	}
 	return nil
+}
+
+func defaultDaemon() DaemonConfig {
+	return DaemonConfig{
+		RefreshInterval:  DefaultRefreshInterval,
+		WatchConfig:      true,
+		DBusSleepWake:    runtime.GOOS == "linux",
+		SentinelFallback: false,
+	}
 }
 
 // ExpandPath expands a leading `~` and any `$VAR` / `${VAR}` references.
