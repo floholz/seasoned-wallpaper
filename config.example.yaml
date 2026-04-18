@@ -1,0 +1,51 @@
+# seasoned-wallpaper example configuration.
+#
+# Install path (Linux/macOS): $XDG_CONFIG_HOME/seasoned/config.yaml
+#                             (fallback: ~/.config/seasoned/config.yaml)
+# Install path (Windows):     %APPDATA%\seasoned\config.yaml
+
+# Default pool. Required. Random picks are drawn from here when no season matches.
+wallpaper_dir: ~/Pictures/wallpapers
+
+# Recurse into subdirectories when scanning the default pool. Default: false.
+recursive: false
+
+# File extensions to consider. Default: jpg, jpeg, png, webp.
+extensions: [jpg, jpeg, png, webp]
+
+# Optional Linux backend override. If set, auto-detection is skipped.
+# {{.Path}} is substituted with the shell-quoted absolute wallpaper path at apply time.
+# linux:
+#   command: "swww img {{.Path}}"
+
+# Optional list of seasons. Priority: specific-date > annual-date >
+# specific-range > annual-range > default pool. Within the same tier,
+# overlapping dates are a config error.
+#
+# `path` may be a file (used directly) or a directory (random pick from it,
+# with the same extension filter as the pool).
+#
+# `name` is optional — used only for `seasoned seasons` output and logs.
+seasons:
+  # Single recurring annual date (MM-DD).
+  - name: winter-holiday
+    date: "12-25"
+    path: ~/Pictures/wallpapers/seasons/dec-25
+
+  # Single specific date (YYYY-MM-DD) — only applies in that year.
+  - date: "2026-04-05"
+    path: ~/Pictures/wallpapers/seasons/2026-04-05.jpg
+
+  # Recurring annual range (MM-DD..MM-DD), inclusive on both ends.
+  - name: december
+    date_range: "12-01..12-24"
+    path: ~/Pictures/wallpapers/seasons/december
+
+  # Specific-year range (YYYY-MM-DD..YYYY-MM-DD).
+  - date_range: "2026-03-28..2026-03-30"
+    path: ~/Pictures/wallpapers/seasons/spring-2026
+
+  # Ranges wrapping the year boundary are supported.
+  - name: year-turn
+    date_range: "12-30..01-02"
+    path: ~/Pictures/wallpapers/seasons/new-year
