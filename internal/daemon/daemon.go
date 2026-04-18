@@ -153,9 +153,24 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	for {
 		now := d.clock.Now()
-		wake := NextWake(now, d.refreshInterval())
+		rotation, at, interval := d.rotationParams()
+		rot := NextRotation(now, at, interval)
+		safety := now.Add(rotation) // safety-net ceiling on sleep length
+
+		var wake time.Time
+		var isRotation bool
+		if rot.Before(safety) {
+			wake, isRotation = rot, true
+		} else {
+			wake, isRotation = safety, false
+		}
 		sleep := max(wake.Sub(now), time.Second)
-		slog.Debug("scheduling next wake", "at", wake.Format(time.RFC3339), "in", sleep.String())
+		slog.Debug("scheduling next wake",
+			"at", wake.Format(time.RFC3339),
+			"in", sleep.String(),
+			"rotation", isRotation,
+			"next_rotation", rot.Format(time.RFC3339),
+		)
 
 		select {
 		case <-ctx.Done():
@@ -164,10 +179,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-d.clock.After(sleep):
 			actual := d.clock.Now()
-			if Drifted(wake, actual, sleep) {
+			drifted := Drifted(wake, actual, sleep)
+			if drifted {
 				slog.Info("probable wake from suspend", "expected", wake.Format(time.RFC3339), "actual", actual.Format(time.RFC3339))
 			}
-			d.evaluate(ctx, false)
+			// Force a fresh pick on a scheduled rotation or after a probable
+			// suspend; the safety-net wake stays a no-op when ReusedToday holds.
+			d.evaluate(ctx, isRotation || drifted)
 
 		case <-d.reloadCh:
 			d.reload()
@@ -179,9 +197,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-d.wakeCh:
 			slog.Info("resume signal received")
-			d.evaluate(ctx, false)
+			d.evaluate(ctx, true)
 		}
 	}
+}
+
+// rotationParams returns the daemon's current schedule params under the
+// config lock: the safety-net refresh interval, the sorted rotation
+// offsets, and the rotation interval (0 = list mode).
+func (d *Daemon) rotationParams() (refresh time.Duration, at []time.Duration, interval time.Duration) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cfg.Daemon.RefreshInterval, d.cfg.Daemon.RotationAt, d.cfg.Daemon.RotationInterval
 }
 
 // evaluate runs one ResolveForDate + optional Apply + state save. Errors

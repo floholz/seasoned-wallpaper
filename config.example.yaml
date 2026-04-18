@@ -53,7 +53,24 @@ seasons:
 # Optional daemon block. Only read by `seasoned daemon`. All fields have
 # defaults — an existing v1 config stays valid without this block.
 # daemon:
-#   # Safety-net forced re-evaluation interval. Go duration syntax. Default: 6h.
+#   # When the daemon rotates the wallpaper. Two modes:
+#   #
+#   # 1) List mode — fires at each listed clock time (local). Single value
+#   #    or array. Default: "03:00".
+#   #      rotation_at: "03:00"
+#   #      rotation_at: ["00:00", "06:00", "12:00", "18:00"]
+#   #
+#   # 2) Anchor + interval mode — fires at rotation_at, then every
+#   #    rotation_interval thereafter. rotation_at must be a single value
+#   #    (or omitted, in which case 03:00 is the anchor). Minimum interval
+#   #    is 1m — sub-minute rotation isn't meaningful.
+#   #      rotation_at: "06:00"
+#   #      rotation_interval: "8h"   # fires at 06:00, 14:00, 22:00
+#   rotation_at: "03:00"
+#   # rotation_interval: "12h"
+#
+#   # Safety-net forced re-evaluation ceiling on sleep between rotations.
+#   # Protects against clock drift and missed wake events. Default: 6h.
 #   refresh_interval: 6h
 #
 #   # Watch the config file for changes and hot-reload on write. Default: true.

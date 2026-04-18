@@ -114,10 +114,28 @@ documented quirk, accepted for v1.
 ## Daemon mode (v2)
 
 Instead of wiring a timer, you can run `seasoned` as a long-lived
-per-user process. The daemon re-evaluates at each local midnight, at a
-configurable safety-net interval (default 6h), and on wake-from-suspend.
-It calls the same `ResolveForDate` as the one-shot CLI, so there is no
+per-user process. The daemon rotates on a user-defined schedule (default
+once per day at 03:00 local) and re-applies on wake-from-suspend. It
+calls the same `ResolveForDate` as the one-shot CLI, so there is no
 behavioral divergence.
+
+Rotation schedule — two modes:
+
+```yaml
+daemon:
+  # List mode: fires at each listed clock time.
+  rotation_at: ["00:00", "12:00"]
+
+  # OR anchor + interval mode: fires at rotation_at, then every
+  # rotation_interval. Minimum 30m.
+  rotation_at: "06:00"
+  rotation_interval: "8h"   # → 06:00, 14:00, 22:00
+```
+
+Defaults to `rotation_at: "03:00"` (once per day at 03:00 local). A
+`refresh_interval` (default 6h) serves as a ceiling on sleep between
+wakes — a safety net against clock drift and missed suspend events, not
+a rotation cadence.
 
 Control surface:
 

@@ -100,6 +100,7 @@ func setupTestDaemon(t *testing.T, now time.Time) (*Daemon, *fakeClock, *stubSet
 			WatchConfig:      false,
 			DBusSleepWake:    false,
 			SentinelFallback: false,
+			RotationAt:       []time.Duration{3 * time.Hour},
 		},
 	}
 

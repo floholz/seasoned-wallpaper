@@ -22,6 +22,17 @@ var DefaultExtensions = []string{"jpg", "jpeg", "png", "webp"}
 // cadence when the user doesn't override it.
 const DefaultRefreshInterval = 6 * time.Hour
 
+// DefaultRotationAnchor is the default clock time at which a rotation
+// fires: 03:00 local. Expressed as an offset from local midnight so the
+// scheduler can do duration arithmetic without re-parsing.
+const DefaultRotationAnchor = 3 * time.Hour
+
+// MinRotationInterval is the smallest interval the daemon accepts.
+// Sub-minute scheduling isn't meaningful for a wallpaper — clock
+// resolution in configs is HH:MM, and picking a new image every few
+// seconds would just thrash the display.
+const MinRotationInterval = time.Minute
+
 // Config is the parsed, validated, path-expanded configuration.
 type Config struct {
 	Source string // path the config was loaded from
@@ -44,6 +55,18 @@ type DaemonConfig struct {
 	WatchConfig      bool
 	DBusSleepWake    bool
 	SentinelFallback bool
+
+	// RotationAt is the list of clock-time offsets from local midnight at
+	// which a rotation fires. In list mode (RotationInterval == 0), each
+	// entry fires independently. In interval mode, the first entry is the
+	// anchor and all others are rejected at validation time. Always has
+	// at least one entry after Load.
+	RotationAt []time.Duration
+
+	// RotationInterval is the spacing between rotations anchored at
+	// RotationAt[0]. Zero means list mode. When non-zero, it is at least
+	// MinRotationInterval.
+	RotationInterval time.Duration
 }
 
 // rawConfig mirrors the YAML schema; kept internal so the public Config stays
@@ -63,10 +86,12 @@ type rawConfig struct {
 }
 
 type rawDaemon struct {
-	RefreshInterval  string `yaml:"refresh_interval"`
-	WatchConfig      *bool  `yaml:"watch_config"`
-	DBusSleepWake    *bool  `yaml:"dbus_sleep_wake"`
-	SentinelFallback *bool  `yaml:"sentinel_fallback"`
+	RefreshInterval  string    `yaml:"refresh_interval"`
+	RotationAt       yaml.Node `yaml:"rotation_at"` // scalar or sequence
+	RotationInterval string    `yaml:"rotation_interval"`
+	WatchConfig      *bool     `yaml:"watch_config"`
+	DBusSleepWake    *bool     `yaml:"dbus_sleep_wake"`
+	SentinelFallback *bool     `yaml:"sentinel_fallback"`
 }
 
 type rawSeason struct {
@@ -155,6 +180,31 @@ func (c *Config) populate(raw *rawConfig) error {
 			}
 			c.Daemon.RefreshInterval = d
 		}
+
+		userSetAt := false
+		if raw.Daemon.RotationAt.Kind != 0 {
+			at, err := parseRotationAt(&raw.Daemon.RotationAt)
+			if err != nil {
+				return err
+			}
+			c.Daemon.RotationAt = at
+			userSetAt = true
+		}
+
+		if s := strings.TrimSpace(raw.Daemon.RotationInterval); s != "" {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("config: daemon.rotation_interval %q: %w", s, err)
+			}
+			if d < MinRotationInterval {
+				return fmt.Errorf("config: daemon.rotation_interval must be at least %s, got %s", MinRotationInterval, d)
+			}
+			if userSetAt && len(c.Daemon.RotationAt) > 1 {
+				return errors.New("config: daemon.rotation_interval cannot be combined with a list of rotation_at values (provide a single anchor instead)")
+			}
+			c.Daemon.RotationInterval = d
+		}
+
 		if raw.Daemon.WatchConfig != nil {
 			c.Daemon.WatchConfig = *raw.Daemon.WatchConfig
 		}
@@ -168,12 +218,94 @@ func (c *Config) populate(raw *rawConfig) error {
 	return nil
 }
 
+// parseRotationAt accepts a YAML scalar ("HH:MM") or sequence of scalars
+// and returns a sorted, deduplicated list of offsets from local midnight.
+func parseRotationAt(n *yaml.Node) ([]time.Duration, error) {
+	var raw []string
+	switch n.Kind {
+	case yaml.ScalarNode:
+		raw = []string{n.Value}
+	case yaml.SequenceNode:
+		if err := n.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("config: daemon.rotation_at: %w", err)
+		}
+	default:
+		return nil, errors.New("config: daemon.rotation_at must be a HH:MM string or list of HH:MM strings")
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("config: daemon.rotation_at list is empty")
+	}
+
+	seen := make(map[time.Duration]struct{}, len(raw))
+	out := make([]time.Duration, 0, len(raw))
+	for _, s := range raw {
+		d, err := parseClockTime(s)
+		if err != nil {
+			return nil, err
+		}
+		if _, dup := seen[d]; dup {
+			continue
+		}
+		seen[d] = struct{}{}
+		out = append(out, d)
+	}
+	// Sort ascending so scheduler can walk in order.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out, nil
+}
+
+// parseClockTime parses "HH:MM" (0-23 : 0-59) into an offset from midnight.
+// Accepts "6:00" as well as "06:00".
+func parseClockTime(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	colon := strings.IndexByte(s, ':')
+	if colon <= 0 || colon == len(s)-1 {
+		return 0, fmt.Errorf("config: rotation_at %q: expected HH:MM", s)
+	}
+	h, err := parseBoundedInt(s[:colon], 0, 23)
+	if err != nil {
+		return 0, fmt.Errorf("config: rotation_at %q: hour %w", s, err)
+	}
+	m, err := parseBoundedInt(s[colon+1:], 0, 59)
+	if err != nil {
+		return 0, fmt.Errorf("config: rotation_at %q: minute %w", s, err)
+	}
+	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute, nil
+}
+
+func parseBoundedInt(s string, lo, hi int) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("missing value")
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("%q is not a number", s)
+		}
+		n = n*10 + int(c-'0')
+		if n > hi {
+			return 0, fmt.Errorf("%q out of range [%d, %d]", s, lo, hi)
+		}
+	}
+	if n < lo {
+		return 0, fmt.Errorf("%q out of range [%d, %d]", s, lo, hi)
+	}
+	return n, nil
+}
+
 func defaultDaemon() DaemonConfig {
 	return DaemonConfig{
 		RefreshInterval:  DefaultRefreshInterval,
 		WatchConfig:      true,
 		DBusSleepWake:    runtime.GOOS == "linux",
 		SentinelFallback: false,
+		RotationAt:       []time.Duration{DefaultRotationAnchor},
+		RotationInterval: 0,
 	}
 }
 

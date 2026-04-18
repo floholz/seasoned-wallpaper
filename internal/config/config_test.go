@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -183,6 +184,123 @@ daemon:
 `)
 	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "at least 1m") {
 		t.Fatalf("expected min-duration error, got %v", err)
+	}
+}
+
+func TestLoad_DaemonDefaultsRotationAnchor(t *testing.T) {
+	p := writeConfig(t, `wallpaper_dir: /tmp/w`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Daemon.RotationAt) != 1 || cfg.Daemon.RotationAt[0] != 3*time.Hour {
+		t.Errorf("default rotation_at = %v, want [03:00]", cfg.Daemon.RotationAt)
+	}
+	if cfg.Daemon.RotationInterval != 0 {
+		t.Errorf("default rotation_interval = %v, want 0", cfg.Daemon.RotationInterval)
+	}
+}
+
+func TestLoad_DaemonRotationAtScalar(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_at: "06:30"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 6*time.Hour + 30*time.Minute
+	if len(cfg.Daemon.RotationAt) != 1 || cfg.Daemon.RotationAt[0] != want {
+		t.Errorf("rotation_at = %v, want [%s]", cfg.Daemon.RotationAt, want)
+	}
+}
+
+func TestLoad_DaemonRotationAtArraySortsAndDedupes(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_at: ["18:00", "00:00", "6:00", "18:00"]
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{0, 6 * time.Hour, 18 * time.Hour}
+	if len(cfg.Daemon.RotationAt) != len(want) {
+		t.Fatalf("rotation_at = %v, want %v", cfg.Daemon.RotationAt, want)
+	}
+	for i, w := range want {
+		if cfg.Daemon.RotationAt[i] != w {
+			t.Errorf("rotation_at[%d] = %v, want %v", i, cfg.Daemon.RotationAt[i], w)
+		}
+	}
+}
+
+func TestLoad_DaemonRotationIntervalWithScalarAnchor(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_at: "06:00"
+  rotation_interval: "8h"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Daemon.RotationInterval != 8*time.Hour {
+		t.Errorf("rotation_interval = %v, want 8h", cfg.Daemon.RotationInterval)
+	}
+}
+
+func TestLoad_DaemonRotationIntervalWithArrayIsRejected(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_at: ["06:00", "18:00"]
+  rotation_interval: "8h"
+`)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
+func TestLoad_DaemonRotationIntervalSubMinuteRejected(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_interval: "30s"
+`)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "at least 1m") {
+		t.Fatalf("expected min-interval error, got %v", err)
+	}
+}
+
+func TestLoad_DaemonRotationIntervalOneMinuteAccepted(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+daemon:
+  rotation_interval: "1m"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Daemon.RotationInterval != time.Minute {
+		t.Errorf("rotation_interval = %v, want 1m", cfg.Daemon.RotationInterval)
+	}
+}
+
+func TestLoad_DaemonRotationAtInvalidFormat(t *testing.T) {
+	cases := []string{"25:00", "12:60", "noon", "12", "12:", ":30"}
+	for _, tc := range cases {
+		p := writeConfig(t, "wallpaper_dir: /tmp/w\ndaemon:\n  rotation_at: \""+tc+"\"\n")
+		if _, err := Load(p); err == nil {
+			t.Errorf("rotation_at %q: expected parse error, got nil", tc)
+		}
 	}
 }
 

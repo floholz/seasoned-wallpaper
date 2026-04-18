@@ -2,24 +2,40 @@ package daemon
 
 import "time"
 
-// NextWake returns the earlier of:
+// NextRotation returns the next local wall-clock moment at which the
+// daemon should force a new wallpaper pick, given the rotation schedule.
 //
-//   - the next local midnight after now (so today's pick is re-evaluated
-//     when the date rolls)
-//   - now + refresh (safety net against clock drift and missed wake-ups).
+//   - If interval == 0 (list mode), the next fire is the earliest of
+//     today's at[i] that is strictly after now, or tomorrow's at[0] if
+//     all of today's have passed.
 //
-// Season boundaries always coincide with a midnight, so they don't need to
-// be enumerated separately. This keeps the scheduler trivially correct.
-func NextWake(now time.Time, refresh time.Duration) time.Time {
-	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-	if refresh <= 0 {
-		return midnight
+//   - If interval > 0 (anchor mode), at[0] is interpreted as the clock
+//     anchor, and the schedule is anchor + k*interval for the smallest k
+//     that yields a moment strictly after now.
+//
+// at must be non-empty and sorted ascending. Offsets are relative to
+// local midnight of now.
+func NextRotation(now time.Time, at []time.Duration, interval time.Duration) time.Time {
+	loc := now.Location()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	if interval > 0 {
+		anchor := today.Add(at[0])
+		if anchor.After(now) {
+			return anchor
+		}
+		elapsed := now.Sub(anchor)
+		k := int64(elapsed/interval) + 1
+		return anchor.Add(time.Duration(k) * interval)
 	}
-	refreshAt := now.Add(refresh)
-	if refreshAt.Before(midnight) {
-		return refreshAt
+
+	for _, off := range at {
+		t := today.Add(off)
+		if t.After(now) {
+			return t
+		}
 	}
-	return midnight
+	return today.AddDate(0, 0, 1).Add(at[0])
 }
 
 // Drifted reports true when the actual wake-up happened so much later than
