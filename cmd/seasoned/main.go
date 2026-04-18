@@ -67,6 +67,8 @@ func run(argv []string) int {
 	}
 	args := fs.Args()
 	if len(args) == 0 {
+		fmt.Printf("  %s\n", version)
+		fmt.Fprintln(os.Stderr, banner)
 		printUsage(os.Stderr)
 		return exitGeneric
 	}
@@ -91,8 +93,7 @@ func run(argv []string) int {
 	case "kick":
 		return cmdKick(g, args[1:])
 	case "version":
-		fmt.Printf("  %s\n", version)
-		fmt.Println(banner)
+		fmt.Printf("%s\n", version)
 		return exitOK
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
