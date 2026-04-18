@@ -1,5 +1,8 @@
 .idea
-bin
+.vscode
 
-SPEC.md
+seasoned*
+config.yaml
+
+SPEC*.md
 CONTINUE.md
