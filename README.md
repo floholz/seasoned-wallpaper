@@ -22,6 +22,13 @@ The CLI binary is `seasoned`.
 
 ## Install
 
+Prebuilt binaries for Linux, macOS and Windows (amd64/arm64) are attached to
+each [release](https://github.com/floholz/seasoned-wallpaper/releases), with
+a `checksums.txt`. Extract `seasoned` somewhere on your `PATH`
+(e.g. `~/.local/bin`).
+
+Or with Go:
+
 ```sh
 go install github.com/floholz/seasoned-wallpaper/cmd/seasoned@latest
 ```
