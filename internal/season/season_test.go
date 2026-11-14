@@ -8,7 +8,7 @@ import (
 
 func mustParse(t *testing.T, name, date, dateRange, path string) Spec {
 	t.Helper()
-	s, err := Parse(name, date, dateRange, path)
+	s, err := Parse(name, date, dateRange, "", path)
 	if err != nil {
 		t.Fatalf("Parse(%q,%q,%q,%q): unexpected error %v", name, date, dateRange, path, err)
 	}
@@ -57,7 +57,7 @@ func TestParse_Errors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Parse(tc.name, tc.date, tc.rng, tc.path)
+			_, err := Parse(tc.name, tc.date, tc.rng, "", tc.path)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -257,4 +257,70 @@ func TestNextMatch(t *testing.T) {
 			t.Fatalf("got %v ok=%v", got, ok)
 		}
 	})
+}
+
+func mustParseTimed(t *testing.T, name, dateRange, timeRange string) Spec {
+	t.Helper()
+	s, err := Parse(name, "", dateRange, timeRange, "/p/"+name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestMatch_TimedBeatsUntimedInSameTier(t *testing.T) {
+	winter := mustParse(t, "winter", "", "11-01..12-23", "/p/winter")
+	night := mustParseTimed(t, "winter_night", "11-01..12-23", "20:00..06:00")
+	specs := []Spec{night, winter} // order must not matter
+	at := func(h int) time.Time { return time.Date(2026, 12, 1, h, 0, 0, 0, time.UTC) }
+
+	if m := Match(at(12), specs); m == nil || m.Name != "winter" {
+		t.Errorf("12:00 = %v, want winter", m)
+	}
+	if m := Match(at(21), specs); m == nil || m.Name != "winter_night" {
+		t.Errorf("21:00 = %v, want winter_night", m)
+	}
+	if m := Match(at(3), specs); m == nil || m.Name != "winter_night" {
+		t.Errorf("03:00 = %v, want winter_night", m)
+	}
+	// Outside the dates, the time window alone doesn't match.
+	if m := Match(time.Date(2026, 6, 1, 21, 0, 0, 0, time.UTC), specs); m != nil {
+		t.Errorf("June 21:00 matched %q", m.Name)
+	}
+}
+
+func TestMatch_HigherTierBeatsTimedLowerTier(t *testing.T) {
+	xmas := mustParse(t, "xmas", "12-25", "", "/p/xmas")
+	night := mustParseTimed(t, "dec_night", "12-01..12-31", "20:00..06:00")
+	m := Match(time.Date(2026, 12, 25, 22, 0, 0, 0, time.UTC), []Spec{night, xmas})
+	if m == nil || m.Name != "xmas" {
+		t.Errorf("got %v, want xmas (annual date beats annual range)", m)
+	}
+}
+
+func TestCheckConflicts_TimedSeasons(t *testing.T) {
+	winter := mustParse(t, "winter", "", "11-01..12-23", "/p")
+	night := mustParseTimed(t, "night", "11-01..12-23", "20:00..06:00")
+	morning := mustParseTimed(t, "morning", "12-01..12-10", "06:00..09:00")
+	late := mustParseTimed(t, "late", "12-01..12-10", "23:00..01:00")
+
+	if err := CheckConflicts([]Spec{winter, night, morning}); err != nil {
+		t.Errorf("timed seasons with disjoint windows flagged: %v", err)
+	}
+	err := CheckConflicts([]Spec{night, late})
+	if err == nil || !strings.Contains(err.Error(), "overlapping time ranges") {
+		t.Errorf("expected time overlap conflict, got %v", err)
+	}
+	// Non-overlapping dates never conflict, whatever the times.
+	jan := mustParseTimed(t, "jan", "01-01..01-31", "20:00..06:00")
+	if err := CheckConflicts([]Spec{night, jan}); err != nil {
+		t.Errorf("disjoint dates flagged: %v", err)
+	}
+}
+
+func TestParse_InvalidTimeRange(t *testing.T) {
+	_, err := Parse("x", "12-25", "", "20:00", "/p")
+	if err == nil || !strings.Contains(err.Error(), `season "x"`) {
+		t.Errorf("expected season time range error, got %v", err)
+	}
 }

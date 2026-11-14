@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/floholz/seasoned-wallpaper/internal/config"
+	"github.com/floholz/seasoned-wallpaper/internal/season"
 )
 
 // fakeClock is a deterministic Clock for daemon tests. After(d) registers a
@@ -205,6 +206,50 @@ func TestRun_ContextCancelShutsDown(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not shut down on ctx cancel")
 	}
+}
+
+// TestRun_TimedSeasonBoundaryReapplies verifies the daemon wakes when a
+// timed season starts (well before the 03:00 rotation or 6h safety net) and
+// applies a wallpaper from the season's source.
+func TestRun_TimedSeasonBoundaryReapplies(t *testing.T) {
+	start := time.Date(2026, 6, 15, 19, 0, 0, 0, time.UTC)
+	d, clk, set := setupTestDaemon(t, start)
+
+	dark := t.TempDir()
+	darkFile := filepath.Join(dark, "dark.jpg")
+	if err := os.WriteFile(darkFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	night, err := season.Parse("june_night", "", "06-01..06-30", "20:00..06:00", dark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.cfg.Seasons = []season.Spec{night}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	if !waitFor(func() bool { return set.Count() == 1 }, 2*time.Second) {
+		t.Fatal("initial apply missing")
+	}
+	if !waitFor(func() bool { return clk.pendingCount() >= 1 }, 2*time.Second) {
+		t.Fatal("no pending After after initial evaluate")
+	}
+	clk.Advance(time.Hour) // exactly the 20:00 boundary
+
+	if !waitFor(func() bool { return set.Count() == 2 }, 2*time.Second) {
+		t.Fatalf("boundary did not trigger apply, count=%d", set.Count())
+	}
+	set.mu.Lock()
+	last := set.applied[len(set.applied)-1]
+	set.mu.Unlock()
+	if last != darkFile {
+		t.Errorf("applied %q, want %q", last, darkFile)
+	}
+
+	cancel()
+	<-done
 }
 
 // --- helpers ---

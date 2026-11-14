@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/floholz/seasoned-wallpaper/internal/season"
+	"github.com/floholz/seasoned-wallpaper/internal/timerange"
 )
 
 // DefaultExtensions is the fallback extension set when the user omits it.
@@ -98,6 +99,7 @@ type rawSeason struct {
 	Name      string `yaml:"name"`
 	Date      string `yaml:"date"`
 	DateRange string `yaml:"date_range"`
+	TimeRange string `yaml:"time_range"`
 	Path      string `yaml:"path"`
 }
 
@@ -157,7 +159,7 @@ func (c *Config) populate(raw *rawConfig) error {
 	specs := make([]season.Spec, 0, len(raw.Seasons))
 	for i, rs := range raw.Seasons {
 		rs.Path = ExpandPath(rs.Path)
-		s, err := season.Parse(rs.Name, rs.Date, rs.DateRange, rs.Path)
+		s, err := season.Parse(rs.Name, rs.Date, rs.DateRange, rs.TimeRange, rs.Path)
 		if err != nil {
 			return fmt.Errorf("config: season #%d: %w", i+1, err)
 		}
@@ -258,44 +260,14 @@ func parseRotationAt(n *yaml.Node) ([]time.Duration, error) {
 	return out, nil
 }
 
-// parseClockTime parses "HH:MM" (0-23 : 0-59) into an offset from midnight.
-// Accepts "6:00" as well as "06:00".
+// parseClockTime parses "HH:MM" into an offset from midnight, with
+// rotation_at-specific error context.
 func parseClockTime(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	colon := strings.IndexByte(s, ':')
-	if colon <= 0 || colon == len(s)-1 {
-		return 0, fmt.Errorf("config: rotation_at %q: expected HH:MM", s)
-	}
-	h, err := parseBoundedInt(s[:colon], 0, 23)
+	d, err := timerange.ParseClock(s)
 	if err != nil {
-		return 0, fmt.Errorf("config: rotation_at %q: hour %w", s, err)
+		return 0, fmt.Errorf("config: rotation_at %q: %w", s, err)
 	}
-	m, err := parseBoundedInt(s[colon+1:], 0, 59)
-	if err != nil {
-		return 0, fmt.Errorf("config: rotation_at %q: minute %w", s, err)
-	}
-	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute, nil
-}
-
-func parseBoundedInt(s string, lo, hi int) (int, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, errors.New("missing value")
-	}
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("%q is not a number", s)
-		}
-		n = n*10 + int(c-'0')
-		if n > hi {
-			return 0, fmt.Errorf("%q out of range [%d, %d]", s, lo, hi)
-		}
-	}
-	if n < lo {
-		return 0, fmt.Errorf("%q out of range [%d, %d]", s, lo, hi)
-	}
-	return n, nil
+	return d, nil
 }
 
 func defaultDaemon() DaemonConfig {

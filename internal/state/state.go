@@ -16,9 +16,13 @@ import (
 // State mirrors the JSON on disk. Keep struct tags stable — this is a
 // user-visible format.
 type State struct {
-	LastAppliedDate   string              `json:"last_applied_date,omitempty"`
-	LastAppliedPath   string              `json:"last_applied_path,omitempty"`
-	LastAppliedSeason string              `json:"last_applied_season,omitempty"`
+	LastAppliedDate   string `json:"last_applied_date,omitempty"`
+	LastAppliedPath   string `json:"last_applied_path,omitempty"`
+	LastAppliedSeason string `json:"last_applied_season,omitempty"`
+	// LastAppliedSource is the pool / season / time-range source the last
+	// pick came from. A change of source (e.g. crossing into a night time
+	// range) invalidates the once-per-day reuse.
+	LastAppliedSource string              `json:"last_applied_source,omitempty"`
 	RecentBySource    map[string][]string `json:"recent_by_source,omitempty"`
 }
 

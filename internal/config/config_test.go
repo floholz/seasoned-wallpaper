@@ -320,3 +320,43 @@ func TestExpandPath_EnvVar(t *testing.T) {
 		t.Errorf("ExpandPath $VAR = %q", got)
 	}
 }
+
+func TestLoad_SeasonTimeRange(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+seasons:
+  - name: winter
+    date_range: "11-01..12-23"
+    path: /tmp/winter
+  - name: winter_night
+    date_range: "11-01..12-23"
+    time_range: "20:00..06:00"
+    path: /tmp/winter/night
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Seasons[0].Time != nil {
+		t.Error("winter should be all-day")
+	}
+	n := cfg.Seasons[1].Time
+	if n == nil || n.Start != 20*time.Hour || n.End != 6*time.Hour {
+		t.Errorf("winter_night time = %+v", n)
+	}
+}
+
+func TestLoad_SeasonTimeRangeInvalid(t *testing.T) {
+	p := writeConfig(t, `
+wallpaper_dir: /tmp/w
+seasons:
+  - name: bad
+    date: "12-25"
+    time_range: "25:00..06:00"
+    path: /tmp/a
+`)
+	_, err := Load(p)
+	if err == nil || !strings.Contains(err.Error(), "season #1") {
+		t.Fatalf("expected season time range error, got %v", err)
+	}
+}
