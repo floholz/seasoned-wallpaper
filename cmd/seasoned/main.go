@@ -22,6 +22,7 @@ import (
 	"github.com/floholz/seasoned-wallpaper/internal/season"
 	"github.com/floholz/seasoned-wallpaper/internal/setter"
 	"github.com/floholz/seasoned-wallpaper/internal/state"
+	"github.com/floholz/seasoned-wallpaper/internal/timerange"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -127,7 +128,8 @@ func printUsage(w io.Writer) {
 Commands:
   run                   pick & apply a wallpaper for today, exit
   next                  force a re-roll (ignore "already set today")
-  preview YYYY-MM-DD    print what would be picked on that date (no-op)
+  preview YYYY-MM-DD [HH:MM]
+                        print what would be picked at that date/time (no-op)
   detect                print detected platform backend and exit
   seasons               list configured seasons and their next match
   daemon                run as a long-lived background process
@@ -231,15 +233,27 @@ func cmdRun(g *globalFlags, args []string, force bool) int {
 }
 
 func cmdPreview(g *globalFlags, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: seasoned preview YYYY-MM-DD")
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintln(os.Stderr, "usage: seasoned preview YYYY-MM-DD [HH:MM]")
 		return exitGeneric
 	}
-	when, err := time.ParseInLocation(dateFmt, args[0], time.Local)
+	day, err := time.ParseInLocation(dateFmt, args[0], time.Local)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid date %q: %v\n", args[0], err)
 		return exitGeneric
 	}
+	// Time of day defaults to the current clock time, so timed seasons
+	// resolve the way they would right now on that date.
+	now := time.Now()
+	clock := time.Duration(now.Hour())*time.Hour + time.Duration(now.Minute())*time.Minute
+	if len(args) == 2 {
+		if clock, err = timerange.ParseClock(args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "invalid time %q: %v\n", args[1], err)
+			return exitGeneric
+		}
+	}
+	when := time.Date(day.Year(), day.Month(), day.Day(),
+		int(clock/time.Hour), int((clock%time.Hour)/time.Minute), 0, 0, time.Local)
 
 	cfg, rc := loadConfig(g, true)
 	if rc != 0 {
@@ -269,10 +283,13 @@ func cmdPreview(g *globalFlags, args []string) int {
 	}
 
 	origin := "pool"
-	if !d.FromPool {
+	if d.Season != nil {
 		origin = "season=" + displaySeasonName(d.SeasonName)
+		if d.Season.Time != nil {
+			origin += " " + d.Season.Time.String()
+		}
 	}
-	fmt.Printf("%s  %s  (%s, pool=%d)\n", when.Format(dateFmt), d.Path, origin, d.PoolSize)
+	fmt.Printf("%s  %s  (%s, pool=%d)\n", when.Format("2006-01-02 15:04"), d.Path, origin, d.PoolSize)
 	return exitOK
 }
 
@@ -305,7 +322,7 @@ func cmdSeasons(g *globalFlags) int {
 	}
 	now := time.Now()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tDATE\tNEXT MATCH\tPATH")
+	fmt.Fprintln(tw, "NAME\tKIND\tDATE\tTIME\tNEXT MATCH\tPATH")
 	for i := range cfg.Seasons {
 		s := &cfg.Seasons[i]
 		nextStr := "—"
@@ -317,8 +334,12 @@ func cmdSeasons(g *globalFlags) int {
 		} else {
 			nextStr = "past"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			displaySeasonName(s.Name), s.Kind.String(), seasonDateStr(s), nextStr, s.Path)
+		timeStr := "all day"
+		if s.Time != nil {
+			timeStr = s.Time.String()
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			displaySeasonName(s.Name), s.Kind.String(), seasonDateStr(s), timeStr, nextStr, s.Path)
 	}
 	tw.Flush()
 	return exitOK

@@ -50,6 +50,23 @@ seasons:
     date_range: "12-30..01-02"
     path: ~/Pictures/wallpapers/seasons/new-year
 
+  # Optional `time_range` (HH:MM..HH:MM, local) restricts a season to part
+  # of the day. Within the same priority tier, a timed season beats an
+  # untimed one, so it can share dates with an all-day sibling and take
+  # over in its window. Here: snowy wallpapers by day, darker ones at night.
+  # Two seasons in the same tier only conflict if both their dates and
+  # their times overlap (two all-day seasons always overlap in time).
+  # Start is inclusive, end is exclusive; windows can wrap past midnight.
+  # The daemon switches at the window boundaries on its own; with a v1
+  # timer, schedule `seasoned run` at the boundaries too.
+  - name: winter
+    date_range: "11-01..11-30"
+    path: ~/Pictures/wallpapers/seasons/winter
+  - name: winter-night
+    date_range: "11-01..11-30"
+    time_range: "20:00..06:00"
+    path: ~/Pictures/wallpapers/seasons/winter-night
+
 # Optional daemon block. Only read by `seasoned daemon`. All fields have
 # defaults — an existing v1 config stays valid without this block.
 # daemon:

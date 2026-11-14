@@ -16,7 +16,8 @@
 
 A cross-platform wallpaper rotator with date-based overrides. Picks a random
 wallpaper from a folder on each run — unless the current date matches a
-user-defined override ("season"), in which case the override wins.
+user-defined override ("season"), in which case the override wins. A season
+can be limited to part of the day (e.g. darker wallpapers at night).
 
 The CLI binary is `seasoned`.
 
@@ -53,7 +54,7 @@ go build -o seasoned ./cmd/seasoned
 ```
 seasoned run                  # pick & apply for today, exit
 seasoned next                 # force a re-roll (ignore already-set-today)
-seasoned preview YYYY-MM-DD   # print what would be picked on that date, no-op
+seasoned preview YYYY-MM-DD [HH:MM]  # print what would be picked then, no-op
 seasoned detect               # print detected platform backend and exit
 seasoned seasons              # list configured seasons and their next match
 seasoned daemon               # run as a long-lived background process
@@ -74,13 +75,15 @@ Exit codes: `0` ok, `1` generic, `2` config, `3` no wallpapers, `4` backend,
 
 ## How selection works
 
-- If today falls within one of the configured `seasons`, that season wins.
+- If today (and, for seasons with a `time_range`, the current time) falls
+  within one of the configured `seasons`, that season wins.
 - Otherwise, a random file from `wallpaper_dir` is picked.
 - The last `min(5, floor(poolSize / 2))` picks per source folder are
   remembered (in the state file) and excluded from the next draw. If that
   would leave zero candidates the exclusion set resets.
-- `seasoned run` is idempotent per calendar day — re-running after a
-  successful apply is a no-op. `seasoned next` bypasses that check.
+- `seasoned run` is idempotent per calendar day and source — re-running
+  after a successful apply is a no-op, unless the active source changed
+  (e.g. a timed season started or ended). `seasoned next` bypasses that check.
 
 Priority among matching seasons:
 
@@ -90,6 +93,33 @@ Priority among matching seasons:
 4. Annual date range (`MM-DD..MM-DD`)
 
 Overlaps **within the same tier** are a config error, reported at load time.
+
+### Seasons with a time of day
+
+A season can carry an optional `time_range`, which limits it to part of
+the day. Within the same tier, a timed season beats an untimed one, so it
+can share its dates with an all-day sibling and take over in its window:
+
+```yaml
+seasons:
+  - name: winter
+    date_range: "11-01..12-23"
+    path: ~/Pictures/wallpapers/winter
+  - name: winter_night
+    date_range: "11-01..12-23"
+    time_range: "20:00..06:00"
+    path: ~/Pictures/wallpapers/winter-night
+```
+
+The date tier is decided first: a `12-25` all-day season still beats a
+timed `12-01..12-31` range on Christmas evening. Two seasons in the same
+tier conflict only if both their dates and their times overlap. The date
+is always the calendar date of the moment being evaluated, so with the
+config above the night of 12-23 ends at midnight.
+
+The daemon wakes at each `time_range` boundary and picks a new wallpaper
+from the now-active source. With a v1 timer, add a trigger at the
+boundaries too (e.g. `OnCalendar=*-*-* 06,20:00:00`).
 
 ## Platform backends
 
@@ -136,7 +166,8 @@ documented quirk, accepted for v1.
 
 Instead of wiring a timer, you can run `seasoned` as a long-lived
 per-user process. The daemon rotates on a user-defined schedule (default
-once per day at 03:00 local) and re-applies on wake-from-suspend. It
+once per day at 03:00 local), switches sources at season `time_range`
+boundaries, and re-applies on wake-from-suspend. It
 calls the same `ResolveForDate` as the one-shot CLI, so there is no
 behavioral divergence.
 
@@ -286,6 +317,9 @@ seasons:
     path: ~/Pictures/wallpapers/seasons/dec-25
   - date_range: "12-01..12-24"
     path: ~/Pictures/wallpapers/seasons/december
+  - date_range: "12-01..12-24"
+    time_range: "20:00..06:00"   # optional: takes over during this window
+    path: ~/Pictures/wallpapers/seasons/december-night
 ```
 
 ## State file

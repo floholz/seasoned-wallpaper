@@ -16,8 +16,10 @@ import (
 
 	"github.com/floholz/seasoned-wallpaper/internal/config"
 	"github.com/floholz/seasoned-wallpaper/internal/core"
+	"github.com/floholz/seasoned-wallpaper/internal/season"
 	"github.com/floholz/seasoned-wallpaper/internal/setter"
 	"github.com/floholz/seasoned-wallpaper/internal/state"
+	"github.com/floholz/seasoned-wallpaper/internal/timerange"
 )
 
 // Options configure a Daemon.
@@ -153,7 +155,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	for {
 		now := d.clock.Now()
-		rotation, at, interval := d.rotationParams()
+		rotation, at, interval, ranges := d.rotationParams()
 		rot := NextRotation(now, at, interval)
 		safety := now.Add(rotation) // safety-net ceiling on sleep length
 
@@ -163,6 +165,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			wake, isRotation = rot, true
 		} else {
 			wake, isRotation = safety, false
+		}
+		// Boundaries of timed seasons may change the active source. Wake
+		// there too; the non-forced evaluate re-picks only if the source
+		// actually differs.
+		if b, ok := timerange.NextBoundary(now, ranges); ok && b.Before(wake) {
+			wake, isRotation = b, false
 		}
 		sleep := max(wake.Sub(now), time.Second)
 		slog.Debug("scheduling next wake",
@@ -204,11 +212,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 // rotationParams returns the daemon's current schedule params under the
 // config lock: the safety-net refresh interval, the sorted rotation
-// offsets, and the rotation interval (0 = list mode).
-func (d *Daemon) rotationParams() (refresh time.Duration, at []time.Duration, interval time.Duration) {
+// offsets, the rotation interval (0 = list mode), and the daily windows
+// of timed seasons, whose boundaries need a wake.
+func (d *Daemon) rotationParams() (refresh time.Duration, at []time.Duration, interval time.Duration, ranges []timerange.Spec) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.cfg.Daemon.RefreshInterval, d.cfg.Daemon.RotationAt, d.cfg.Daemon.RotationInterval
+	return d.cfg.Daemon.RefreshInterval, d.cfg.Daemon.RotationAt, d.cfg.Daemon.RotationInterval, season.TimeRanges(d.cfg.Seasons)
 }
 
 // evaluate runs one ResolveForDate + optional Apply + state save. Errors

@@ -6,6 +6,11 @@
 //  2. Annual date         (MM-DD)
 //  3. Specific date range (YYYY-MM-DD..YYYY-MM-DD)
 //  4. Annual date range   (MM-DD..MM-DD)
+//
+// A season may also carry an optional daily time_range ("HH:MM..HH:MM").
+// It then only matches during that window, and within the same tier a
+// timed season beats an untimed one — so a "winter_night" entry can share
+// its dates with "winter" and take over in the evening.
 package season
 
 import (
@@ -13,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/floholz/seasoned-wallpaper/internal/timerange"
 )
 
 type Kind int
@@ -62,11 +69,30 @@ type Spec struct {
 
 	StartYear, StartMonth, StartDay int
 	EndYear, EndMonth, EndDay       int
+
+	// Time restricts the season to a daily window. Nil means all day.
+	Time *timerange.Spec
 }
 
 // Parse turns a raw YAML season entry into a typed Spec.
-// Exactly one of date or dateRange must be non-empty.
-func Parse(name, date, dateRange, path string) (Spec, error) {
+// Exactly one of date or dateRange must be non-empty. timeRange is
+// optional ("HH:MM..HH:MM").
+func Parse(name, date, dateRange, timeRange, path string) (Spec, error) {
+	s, err := parseDates(name, date, dateRange, path)
+	if err != nil {
+		return Spec{}, err
+	}
+	if strings.TrimSpace(timeRange) != "" {
+		start, end, err := timerange.ParseRange(timeRange)
+		if err != nil {
+			return Spec{}, fmt.Errorf("season %s: %w", displayName(name), err)
+		}
+		s.Time = &timerange.Spec{Start: start, End: end}
+	}
+	return s, nil
+}
+
+func parseDates(name, date, dateRange, path string) (Spec, error) {
 	disp := displayName(name)
 	if path == "" {
 		return Spec{}, fmt.Errorf("season %s: path is required", disp)
@@ -126,19 +152,55 @@ func Parse(name, date, dateRange, path string) (Spec, error) {
 	return s, nil
 }
 
-// Match returns the highest-priority Spec that matches t, or nil if none match.
+// Match returns the highest-priority Spec that matches t, or nil if none
+// match. A season with a time range only matches inside its window. Date
+// tier decides first; within a tier a timed season beats an untimed one.
 func Match(t time.Time, specs []Spec) *Spec {
 	var best *Spec
 	for i := range specs {
 		s := &specs[i]
-		if !matches(s, t) {
+		if !matches(s, t) || (s.Time != nil && !s.Time.Contains(t)) {
 			continue
 		}
-		if best == nil || s.Kind.priority() < best.Kind.priority() {
+		if best == nil || s.Kind.priority() < best.Kind.priority() ||
+			(s.Kind == best.Kind && s.Time != nil && best.Time == nil) {
 			best = s
 		}
 	}
 	return best
+}
+
+// TimeRanges returns the daily windows of all timed seasons, for callers
+// that need to know when the active season may change during a day.
+func TimeRanges(specs []Spec) []timerange.Spec {
+	var out []timerange.Spec
+	for i := range specs {
+		if specs[i].Time != nil {
+			out = append(out, *specs[i].Time)
+		}
+	}
+	return out
+}
+
+// clashNote adds context to a conflict error when both seasons are timed.
+func clashNote(a, b *Spec) string {
+	if a.Time == nil || b.Time == nil {
+		return ""
+	}
+	return fmt.Sprintf(" with overlapping time ranges %s and %s", a.Time, b.Time)
+}
+
+// timeClash reports whether two date-overlapping seasons would also both
+// apply at the same moment. An untimed and a timed season never clash —
+// the timed one wins in its window.
+func timeClash(a, b *Spec) bool {
+	switch {
+	case a.Time == nil && b.Time == nil:
+		return true
+	case a.Time == nil || b.Time == nil:
+		return false
+	}
+	return timerange.Overlaps(a.Time, b.Time)
 }
 
 // NextMatch returns the next date (>= from, truncated to midnight in
@@ -195,7 +257,7 @@ func NextMatch(s *Spec, from time.Time) (time.Time, bool) {
 }
 
 // CheckConflicts reports a config error if any two specs in the same priority
-// tier could match the same calendar date.
+// tier could match the same calendar date at the same time of day.
 func CheckConflicts(specs []Spec) error {
 	byKind := map[Kind][]*Spec{}
 	for i := range specs {
@@ -207,9 +269,9 @@ func CheckConflicts(specs []Spec) error {
 	for i := 0; i < len(list1); i++ {
 		for j := i + 1; j < len(list1); j++ {
 			a, b := list1[i], list1[j]
-			if a.StartYear == b.StartYear && a.StartMonth == b.StartMonth && a.StartDay == b.StartDay {
-				return fmt.Errorf("config: seasons %s and %s both pin %04d-%02d-%02d",
-					displayName(a.Name), displayName(b.Name), a.StartYear, a.StartMonth, a.StartDay)
+			if a.StartYear == b.StartYear && a.StartMonth == b.StartMonth && a.StartDay == b.StartDay && timeClash(a, b) {
+				return fmt.Errorf("config: seasons %s and %s both pin %04d-%02d-%02d%s",
+					displayName(a.Name), displayName(b.Name), a.StartYear, a.StartMonth, a.StartDay, clashNote(a, b))
 			}
 		}
 	}
@@ -219,9 +281,9 @@ func CheckConflicts(specs []Spec) error {
 	for i := 0; i < len(list2); i++ {
 		for j := i + 1; j < len(list2); j++ {
 			a, b := list2[i], list2[j]
-			if a.StartMonth == b.StartMonth && a.StartDay == b.StartDay {
-				return fmt.Errorf("config: seasons %s and %s both pin annual %02d-%02d",
-					displayName(a.Name), displayName(b.Name), a.StartMonth, a.StartDay)
+			if a.StartMonth == b.StartMonth && a.StartDay == b.StartDay && timeClash(a, b) {
+				return fmt.Errorf("config: seasons %s and %s both pin annual %02d-%02d%s",
+					displayName(a.Name), displayName(b.Name), a.StartMonth, a.StartDay, clashNote(a, b))
 			}
 		}
 	}
@@ -234,9 +296,9 @@ func CheckConflicts(specs []Spec) error {
 		for j := i + 1; j < len(list3); j++ {
 			bStart := time.Date(list3[j].StartYear, time.Month(list3[j].StartMonth), list3[j].StartDay, 0, 0, 0, 0, time.Local)
 			bEnd := time.Date(list3[j].EndYear, time.Month(list3[j].EndMonth), list3[j].EndDay, 0, 0, 0, 0, time.Local)
-			if !aEnd.Before(bStart) && !bEnd.Before(aStart) {
-				return fmt.Errorf("config: seasons %s and %s have overlapping specific ranges",
-					displayName(list3[i].Name), displayName(list3[j].Name))
+			if !aEnd.Before(bStart) && !bEnd.Before(aStart) && timeClash(list3[i], list3[j]) {
+				return fmt.Errorf("config: seasons %s and %s have overlapping specific ranges%s",
+					displayName(list3[i].Name), displayName(list3[j].Name), clashNote(list3[i], list3[j]))
 			}
 		}
 	}
@@ -249,10 +311,13 @@ func CheckConflicts(specs []Spec) error {
 	}
 	for i := 0; i < len(list4); i++ {
 		for j := i + 1; j < len(list4); j++ {
+			if !timeClash(list4[i], list4[j]) {
+				continue
+			}
 			for day := range sets[i] {
 				if sets[j][day] {
-					return fmt.Errorf("config: seasons %s and %s have overlapping annual ranges",
-						displayName(list4[i].Name), displayName(list4[j].Name))
+					return fmt.Errorf("config: seasons %s and %s have overlapping annual ranges%s",
+						displayName(list4[i].Name), displayName(list4[j].Name), clashNote(list4[i], list4[j]))
 				}
 			}
 		}

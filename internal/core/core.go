@@ -28,12 +28,17 @@ type Decision struct {
 	Source string
 	// SeasonName is the matched season; empty when the pool was used.
 	SeasonName string
+	// Season is the matched season, nil when none matched. Its Time field
+	// is set when the season is restricted to a daily window.
+	Season *season.Spec
 	// FromPool is true when no season matched and the default pool was used.
 	FromPool bool
 	// PoolSize is the number of candidate files considered.
 	PoolSize int
 	// ReusedToday is true when state already holds a pick for the same
-	// calendar date — callers can skip applying. Never set when Force=true.
+	// calendar date and the same source — callers can skip applying. Never
+	// set when Force=true. Crossing into or out of a timed season changes
+	// the source and therefore invalidates reuse.
 	ReusedToday bool
 }
 
@@ -59,20 +64,25 @@ func ResolveForDate(cfg *config.Config, st *state.State, t time.Time, opts Optio
 		st = &state.State{}
 	}
 
-	// Idempotence short-circuit: same date, state has a recorded path.
-	if !opts.Force && st.LastAppliedDate == t.Format(dateFmt) && st.LastAppliedPath != "" {
-		return Decision{
-			Path:        st.LastAppliedPath,
-			Source:      "", // unknown from state alone; caller doesn't need it in the reuse path
-			SeasonName:  st.LastAppliedSeason,
-			FromPool:    st.LastAppliedSeason == "",
-			ReusedToday: true,
-		}, nil
+	r := resolveSource(t, cfg)
+	if r.src == "" {
+		return Decision{}, fmt.Errorf("core: no source for %s (pool empty and no matching season)", t.Format(dateFmt))
 	}
 
-	src, name, fromPool := resolveSource(t, cfg)
-	if src == "" {
-		return Decision{}, fmt.Errorf("core: no source for %s (pool empty and no matching season)", t.Format(dateFmt))
+	// Idempotence short-circuit: same date, same source, state has a
+	// recorded path. State written before sources were tracked has an empty
+	// LastAppliedSource; treat that as matching unless a timed season is
+	// now active, so upgrading doesn't force a re-roll mid-day.
+	sameSource := st.LastAppliedSource == r.src || (st.LastAppliedSource == "" && !r.timed())
+	if !opts.Force && st.LastAppliedDate == t.Format(dateFmt) && st.LastAppliedPath != "" && sameSource {
+		return Decision{
+			Path:        st.LastAppliedPath,
+			Source:      r.src,
+			SeasonName:  st.LastAppliedSeason,
+			Season:      r.season,
+			FromPool:    r.fromPool,
+			ReusedToday: true,
+		}, nil
 	}
 
 	rng := opts.Rand
@@ -80,7 +90,7 @@ func ResolveForDate(cfg *config.Config, st *state.State, t time.Time, opts Optio
 		rng = newRNG()
 	}
 
-	result, err := picker.Pick(src, cfg.Recursive, cfg.Extensions, st.Recent(src), rng)
+	result, err := picker.Pick(r.src, cfg.Recursive, cfg.Extensions, st.Recent(r.src), rng)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -88,16 +98,17 @@ func ResolveForDate(cfg *config.Config, st *state.State, t time.Time, opts Optio
 	return Decision{
 		Path:       result.Path,
 		Source:     result.Source,
-		SeasonName: name,
-		FromPool:   fromPool,
+		SeasonName: r.seasonName,
+		Season:     r.season,
+		FromPool:   r.fromPool,
 		PoolSize:   result.Pool,
 	}, nil
 }
 
-// SourceFor reports which source (pool or season path) applies on date t,
-// without enumerating files. Used by `seasons` output and preview hints.
+// SourceFor reports which source (pool or season path) applies at t, without enumerating files. Used by `seasons` output and preview hints.
 func SourceFor(t time.Time, cfg *config.Config) (src, seasonName string, fromPool bool) {
-	return resolveSource(t, cfg)
+	r := resolveSource(t, cfg)
+	return r.src, r.seasonName, r.fromPool
 }
 
 // Record returns a new state reflecting that d was applied on date t. The
@@ -107,6 +118,7 @@ func Record(st *state.State, t time.Time, d Decision) *state.State {
 	next.LastAppliedDate = t.Format(dateFmt)
 	next.LastAppliedPath = d.Path
 	next.LastAppliedSeason = d.SeasonName
+	next.LastAppliedSource = d.Source
 	if d.PoolSize > 1 && d.Source != "" {
 		recent := picker.Trim(next.Recent(d.Source), picker.RelKey(d.Source, d.Path), d.PoolSize)
 		next.SetRecent(d.Source, recent)
@@ -116,11 +128,23 @@ func Record(st *state.State, t time.Time, d Decision) *state.State {
 
 const dateFmt = "2006-01-02"
 
-func resolveSource(t time.Time, cfg *config.Config) (src, name string, fromPool bool) {
+type resolved struct {
+	src        string
+	seasonName string
+	season     *season.Spec
+	fromPool   bool
+}
+
+// timed reports whether the source depends on the time of day.
+func (r resolved) timed() bool {
+	return r.season != nil && r.season.Time != nil
+}
+
+func resolveSource(t time.Time, cfg *config.Config) resolved {
 	if s := season.Match(t, cfg.Seasons); s != nil {
-		return s.Path, s.Name, false
+		return resolved{src: s.Path, seasonName: s.Name, season: s}
 	}
-	return cfg.WallpaperDir, "", true
+	return resolved{src: cfg.WallpaperDir, fromPool: true}
 }
 
 func newRNG() *rand.Rand {
